@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
+    <title>Real-time User Visualization App</title>
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.8/dist/web/static/pretendard.css" />
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script type="text/javascript" src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=t07wn09rng&callback=initMap"></script>
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        border: "hsl(var(--border))",
+                        input: "hsl(var(--input))",
+                        ring: "hsl(var(--ring))",
+                        background: "hsl(var(--background))",
+                        foreground: "hsl(var(--foreground))",
+                        primary: { DEFAULT: "hsl(var(--primary))", foreground: "hsl(var(--primary-foreground))" },
+                        secondary: { DEFAULT: "hsl(var(--secondary))", foreground: "hsl(var(--secondary-foreground))" },
+                        muted: { DEFAULT: "hsl(var(--muted))", foreground: "hsl(var(--muted-foreground))" },
+                        card: { DEFAULT: "hsl(var(--card))", foreground: "hsl(var(--card-foreground))" },
+                        // [수정] 핫플레이스 단계별 컬러 (더 선명하게)
+                        status: { 
+                            blue: "#3b82f6",   // 여유
+                            green: "#22c55e",  // 보통
+                            orange: "#f97316", // 혼잡
+                            red: "#ef4444"     // 포화
+                        }
+                    },
+                    borderRadius: { lg: "var(--radius)", md: "calc(var(--radius) - 2px)", sm: "calc(var(--radius) - 4px)" },
+                    fontFamily: { sans: ['Pretendard', 'sans-serif'] }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        :root {
+            --background: 0 0% 100%; --foreground: 222.2 84% 4.9%; --card: 0 0% 100%; --card-foreground: 222.2 84% 4.9%;
+            --popover: 0 0% 100%; --popover-foreground: 222.2 84% 4.9%; --primary: 222.2 47.4% 11.2%; --primary-foreground: 210 40% 98%;
+            --secondary: 210 40% 96.1%; --secondary-foreground: 222.2 47.4% 11.2%; --muted: 210 40% 96.1%; --muted-foreground: 215.4 16.3% 46.9%;
+            --accent: 210 40% 96.1%; --accent-foreground: 222.2 47.4% 11.2%; --destructive: 0 84.2% 60.2%; --destructive-foreground: 210 40% 98%;
+            --border: 214.3 31.8% 91.4%; --input: 214.3 31.8% 91.4%; --ring: 222.2 84% 4.9%; --radius: 0.75rem; --sidebar-width: 400px;
+        }
+        body { font-family: 'Pretendard', sans-serif; overflow: hidden; }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* 마커 상호작용 */
+        .marker-content { transition: z-index 0.2s; }
+        .marker-content:hover { z-index: 100 !important; }
+        .marker-bubble { transition: transform 0.2s; }
+        .marker-content:hover .marker-bubble { transform: translateY(-5px) scale(1.05); }
+
+        /* [수정] 핫플 물결 애니메이션 (CSS 변수로 크기 조절) */
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); opacity: 0.8; }
+            100% { transform: scale(var(--pulse-scale)); opacity: 0; }
+        }
+        .hot-pulse::before {
+            content: ''; position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+            border-radius: 50%; background-color: inherit; z-index: -1;
+            animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+        }
+
+        .modal-enter { opacity: 0; transform: translate(-50%, -45%) scale(0.95); }
+        .modal-enter-active { opacity: 1; transform: translate(-50%, -50%) scale(1); transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+        .overlay-enter { opacity: 0; }
+        .overlay-enter-active { opacity: 1; transition: opacity 0.3s; }
+        
+        /* 범례 도트 컬러 */
+        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+        .dot.blue { background-color: #3b82f6; }
+        .dot.green { background-color: #22c55e; }
+        .dot.orange { background-color: #f97316; }
+        .dot.red { background-color: #ef4444; }
+
+        .wheel-picker { display: flex; height: 160px; position: relative; overflow: hidden; mask-image: linear-gradient(to bottom, transparent, black 20%, black 80%, transparent); -webkit-mask-image: linear-gradient(to bottom, transparent, black 20%, black 80%, transparent); }
+        .wheel-col { flex: 1; overflow-y: auto; scroll-snap-type: y mandatory; padding: 64px 0; }
+        .wheel-col::-webkit-scrollbar { display: none; }
+        .wheel-item { height: 32px; display: flex; align-items: center; justify-content: center; font-size: 16px; color: #9ca3af; scroll-snap-align: center; transition: color 0.2s; cursor: pointer; }
+        .wheel-item.selected { color: #0f172a; font-weight: bold; font-size: 18px; }
+        .wheel-highlight { position: absolute; top: 50%; left: 0; right: 0; height: 34px; transform: translateY(-50%); background: rgba(0,0,0,0.05); border-top: 1px solid rgba(0,0,0,0.1); border-bottom: 1px solid rgba(0,0,0,0.1); pointer-events: none; z-index: -1; }
+    </style>
+</head>
+<body class="bg-background text-foreground w-screen h-screen relative">
+
+    <div id="map" class="w-full h-full absolute top-0 left-0 z-0"></div>
+
+    <div class="absolute top-5 left-5 z-10 md:left-[420px] bg-background/90 backdrop-blur-sm p-3 rounded-lg shadow-sm border border-border flex gap-3 text-xs font-semibold text-muted-foreground pointer-events-none">
+        <div class="flex items-center gap-1.5"><span class="dot blue"></span>여유</div>
+        <div class="flex items-center gap-1.5"><span class="dot green"></span>보통</div>
+        <div class="flex items-center gap-1.5"><span class="dot orange"></span>혼잡</div>
+        <div class="flex items-center gap-1.5"><span class="dot red"></span>포화</div>
+    </div>
+
+    <div class="pointer-events-none absolute inset-0 flex flex-col md:pointer-events-auto md:fixed md:w-[400px] md:border-r md:border-border md:bg-background md:shadow-xl md:z-40">
+        
+        <div id="top-panel" class="pointer-events-auto bg-background p-4 flex flex-col gap-3 border-b border-border shadow-sm md:shadow-none z-30 transition-transform duration-300">
+            <div class="flex items-center bg-muted rounded-lg h-11 px-3 gap-2 transition-all hover:ring-1 hover:ring-ring/20">
+                <i class="fa-solid fa-bars text-muted-foreground cursor-pointer hover:text-primary" onclick="openModal('mypage')"></i>
+                <input type="text" id="search-input" class="flex-1 bg-transparent border-none outline-none text-sm font-medium text-foreground placeholder:text-muted-foreground" placeholder="지역, 핫플 검색" readonly>
+                <i class="fa-solid fa-magnifying-glass text-primary cursor-pointer"></i>
+            </div>
+
+            <div class="flex items-center gap-2 w-full">
+                <button id="btn-datetime" onclick="openModal('datetime')" class="flex-none flex items-center gap-2 bg-primary text-primary-foreground px-4 py-1.5 rounded-full text-xs font-bold shadow-sm transition-all hover:bg-primary/90 whitespace-nowrap">
+                    <i class="fa-regular fa-calendar"></i> <span id="datetime-text">11.26(수) 오후 6:30</span>
+                </button>
+
+                <div class="flex-1 flex gap-2 overflow-x-auto scrollbar-hide py-1" id="filter-container">
+                    <button class="chip active px-3 py-1.5 bg-background border border-border text-muted-foreground text-xs rounded-full shadow-sm whitespace-nowrap transition-all hover:bg-muted" onclick="filterPlaces('all')">전체</button>
+                    <button class="chip px-3 py-1.5 bg-background border border-border text-muted-foreground text-xs rounded-full shadow-sm whitespace-nowrap hover:bg-muted transition-all" onclick="filterPlaces('cafe')">카페/디저트</button>
+                    <button class="chip px-3 py-1.5 bg-background border border-border text-muted-foreground text-xs rounded-full shadow-sm whitespace-nowrap hover:bg-muted transition-all" onclick="filterPlaces('group')">단체 모임</button>
+                    <button class="chip px-3 py-1.5 bg-background border border-border text-muted-foreground text-xs rounded-full shadow-sm whitespace-nowrap hover:bg-muted transition-all" onclick="filterPlaces('mood')">분위기 좋은</button>
+                    <button class="chip px-3 py-1.5 bg-background border border-border text-muted-foreground text-xs rounded-full shadow-sm whitespace-nowrap hover:bg-muted transition-all" onclick="filterPlaces('pub')">술집/밥집</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="pointer-events-auto bg-background flex flex-col absolute bottom-0 left-0 right-0 rounded-t-2xl shadow-[0_-4px_20px_rgba(0,0,0,0.1)] h-[45vh] md:static md:h-full md:rounded-none md:shadow-none z-20">
+            <div class="w-full flex justify-center py-3 cursor-grab md:hidden">
+                <div class="w-10 h-1 bg-muted-foreground/30 rounded-full"></div>
+            </div>
+            
+            <div id="list-view" class="flex flex-col h-full w-full">
+                <div class="px-5 py-3 flex items-center gap-3 text-xs text-muted-foreground border-b border-border bg-background/50 backdrop-blur shrink-0">
+                    <span class="cursor-pointer text-primary font-bold">🔥 실시간 추천순</span>
+                    <span class="text-border">|</span>
+                    <span class="cursor-pointer hover:text-primary transition-colors">거리순</span>
+                    <span class="text-border">|</span>
+                    <span class="cursor-pointer hover:text-primary transition-colors">리뷰 많은순</span>
+                </div>
+
+                <div class="flex-1 overflow-y-auto scrollbar-hide p-0" id="place-list">
+                    </div>
+            </div>
+
+            <div id="route-view" class="hidden flex-col h-full w-full bg-background">
+                <div class="px-5 py-4 border-b border-border flex justify-between items-center shrink-0">
+                    <h3 class="font-bold text-lg text-foreground flex items-center gap-2"><i class="fa-solid fa-route text-primary"></i> 경로 선택</h3>
+                    <button onclick="stopNavigation()" class="px-3 py-1.5 bg-muted text-foreground text-xs font-bold rounded-lg hover:bg-muted/80 transition-colors">안내 종료</button>
+                </div>
+                
+                <div class="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+                    <div class="route-card cursor-pointer p-4 rounded-xl border-2 border-status-blue bg-status-blue/5 hover:bg-status-blue/10 transition-all relative shadow-sm" onclick="highlightRoute(0)">
+                        <div class="flex justify-between items-start mb-2">
+                            <div class="font-bold text-base text-foreground">1. 최단 거리</div>
+                            <span class="text-xs font-bold text-status-blue bg-white px-2 py-1 rounded-full border border-status-blue/20">추천</span>
+                        </div>
+                        <div class="flex items-center gap-4 text-sm text-muted-foreground">
+                            <span class="font-bold text-foreground text-lg"><i class="fa-solid fa-person-walking mr-1"></i>8분</span>
+                            <span>520m</span>
+                        </div>
+                    </div>
+                    <div class="route-card cursor-pointer p-4 rounded-xl border border-status-green hover:border-status-green hover:bg-status-green/5 transition-all relative shadow-sm" onclick="highlightRoute(1)">
+                        <div class="flex justify-between items-start mb-2">
+                            <div class="font-bold text-base text-foreground">2. 분위기 좋은 경로</div>
+                            <span class="text-xs text-status-green"><i class="fa-solid fa-camera"></i> 돌담길 경유</span>
+                        </div>
+                        <div class="flex items-center gap-4 text-sm text-muted-foreground">
+                            <span class="font-bold text-foreground text-lg"><i class="fa-solid fa-person-walking mr-1"></i>12분</span>
+                            <span>650m</span>
+                        </div>
+                    </div>
+                    <div class="route-card cursor-pointer p-4 rounded-xl border border-status-red hover:border-status-red hover:bg-status-red/5 transition-all relative shadow-sm" onclick="highlightRoute(2)">
+                        <div class="flex justify-between items-start mb-2">
+                            <div class="font-bold text-base text-status-red">3. 우범 지역 (주의)</div>
+                            <span class="text-xs text-status-red"><i class="fa-solid fa-triangle-exclamation"></i> 가로등 없음</span>
+                        </div>
+                        <div class="flex items-center gap-4 text-sm text-muted-foreground">
+                            <span class="font-bold text-foreground text-lg"><i class="fa-solid fa-person-walking mr-1"></i>10분</span>
+                            <span>580m</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="datetime-modal" class="modal-window fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-[320px] bg-background rounded-2xl shadow-2xl z-[70] hidden flex-col overflow-hidden transition-all duration-300 border border-border">
+        <div class="flex justify-between items-center p-4 border-b border-border bg-muted/30">
+            <h3 class="text-base font-bold text-primary">방문 일시 설정</h3>
+            <button class="text-muted-foreground hover:text-primary transition-colors" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="p-4 flex flex-col gap-4">
+            <div class="flex flex-col gap-2">
+                <div class="flex justify-between text-sm font-bold text-foreground px-1"><span>11월</span><span>2025</span></div>
+                <div class="grid grid-cols-7 gap-1 text-center text-xs" id="calendar-grid"></div>
+            </div>
+            <div class="border-t border-border"></div>
+            <div class="wheel-picker">
+                <div class="wheel-highlight"></div>
+                <div class="wheel-col" id="wheel-ampm"><div class="wheel-item" data-val="AM">오전</div><div class="wheel-item selected" data-val="PM">오후</div></div>
+                <div class="wheel-col" id="wheel-hour"></div>
+                <div class="wheel-col" id="wheel-minute"><div class="wheel-item" data-val="00">00분</div><div class="wheel-item selected" data-val="30">30분</div></div>
+            </div>
+            <button class="w-full py-3 bg-primary text-primary-foreground rounded-xl font-bold text-sm hover:bg-primary/90 transition-colors shadow-sm mt-2" onclick="confirmDateTime()">설정 완료</button>
+        </div>
+    </div>
+
+    <div id="keyword-modal" class="modal-window fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-[320px] bg-background rounded-2xl shadow-2xl z-[80] hidden flex-col overflow-hidden transition-all duration-300 border border-border">
+        <div class="flex justify-between items-center p-4 border-b border-border bg-muted/30">
+            <h3 class="text-base font-bold text-primary">키워드 추가</h3>
+            <button class="text-muted-foreground hover:text-primary transition-colors" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="p-4 flex flex-col gap-4">
+            <div class="relative">
+                <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm"></i>
+                <input type="text" id="keyword-input" placeholder="취향을 검색해보세요 (예: 분위기)" class="w-full pl-9 pr-3 py-2.5 bg-muted/50 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20" oninput="onKeywordInput(this.value)">
+            </div>
+            <div>
+                <p class="text-xs font-bold text-muted-foreground mb-2">추천 키워드</p>
+                <div id="keyword-suggestions" class="flex flex-col gap-1 max-h-[200px] overflow-y-auto scrollbar-hide"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal-overlay" class="fixed inset-0 bg-black/40 z-50 hidden opacity-0 transition-opacity duration-300 backdrop-blur-[2px]" onclick="closeModal()"></div>
+    <div id="detail-modal" class="modal-window fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-[380px] bg-background rounded-xl shadow-2xl z-[60] hidden flex-col max-h-[85vh] overflow-hidden transition-all duration-300"></div>
+    <div id="reservation-modal" class="modal-window fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-[380px] bg-background rounded-xl shadow-2xl z-[60] hidden flex-col max-h-[85vh] overflow-hidden transition-all duration-300">
+        <div class="flex justify-between items-center p-5 border-b border-border"><h3 class="text-lg font-bold text-primary">매장 예약하기</h3><button class="text-muted-foreground hover:text-primary transition-colors" onclick="closeModal()"><i class="fa-solid fa-xmark text-xl"></i></button></div>
+        <div class="p-5 overflow-y-auto"><div class="flex flex-col gap-4"><div class="flex flex-col gap-1.5"><label class="text-sm font-medium text-muted-foreground">날짜 선택</label><input type="date" id="res-date" class="w-full p-2.5 bg-muted/50 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"></div><button class="w-full py-3 mt-2 bg-primary text-primary-foreground rounded-lg font-bold text-sm hover:bg-primary/90 transition-colors shadow-sm" onclick="submitReservation()">예약 확정하기</button></div></div>
+    </div>
+    
+    <div id="mypage-modal" class="modal-window fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[90%] max-w-[380px] bg-background rounded-xl shadow-2xl z-[60] hidden flex-col max-h-[85vh] overflow-hidden transition-all duration-300">
+        <div class="flex justify-between items-center p-5 border-b border-border"><h3 class="text-lg font-bold text-primary">마이 페이지</h3><button class="text-muted-foreground hover:text-primary transition-colors" onclick="closeModal()"><i class="fa-solid fa-xmark text-xl"></i></button></div>
+        <div class="p-5 overflow-y-auto">
+            <div class="flex border-b border-border mb-5">
+                <div class="tab-item active flex-1 text-center pb-3 text-sm font-bold text-primary border-b-2 border-primary cursor-pointer" onclick="switchTab('profile', this)">내 정보</div>
+                <div class="tab-item flex-1 text-center pb-3 text-sm font-medium text-muted-foreground border-b-2 border-transparent cursor-pointer" onclick="switchTab('taste', this)">내 취향</div>
+                <div class="tab-item flex-1 text-center pb-3 text-sm font-medium text-muted-foreground border-b-2 border-transparent cursor-pointer" onclick="switchTab('stamps', this)">스탬프</div>
+                <div class="tab-item flex-1 text-center pb-3 text-sm font-medium text-muted-foreground border-b-2 border-transparent cursor-pointer" onclick="switchTab('events', this)">이벤트</div>
+            </div>
+            
+            <div id="tab-profile" class="tab-content block">
+                <div class="text-center p-5 bg-muted/30 rounded-xl mb-6"><div class="w-16 h-16 bg-muted rounded-full flex items-center justify-center text-3xl mx-auto mb-3">👤</div><h4 class="font-bold text-lg">김핫플 님</h4></div>
+                <div class="mb-6">
+                    <div class="flex items-center justify-between mb-2 px-1"><h5 class="text-sm font-bold text-foreground">현재 예약</h5><span class="text-xs text-primary cursor-pointer hover:underline">전체보기</span></div>
+                    <div class="bg-card border border-primary/20 rounded-xl p-4 shadow-sm flex justify-between items-center relative overflow-hidden">
+                        <div class="absolute left-0 top-0 bottom-0 w-1 bg-primary"></div>
+                        <div><div class="font-bold text-sm text-foreground mb-1">심야식당 몽환</div><div class="text-xs text-muted-foreground flex gap-2 items-center"><span class="flex items-center gap-1"><i class="fa-regular fa-calendar"></i> 오늘 19:00</span><span class="w-px h-3 bg-border"></span><span class="flex items-center gap-1"><i class="fa-solid fa-user"></i> 2명</span></div></div>
+                        <div class="flex flex-col items-end gap-1"><span class="text-[10px] font-bold text-status-green bg-status-green/10 px-2 py-0.5 rounded-full border border-status-green/20">방문 예정</span></div>
+                    </div>
+                </div>
+                <div class="bg-card border border-border rounded-xl divide-y divide-border">
+                    <div class="flex justify-between p-4 text-sm"><span class="text-muted-foreground">최근 방문</span> <span class="font-bold">3곳</span></div>
+                    <div class="flex justify-between p-4 text-sm"><span class="text-muted-foreground">작성 리뷰</span> <span class="font-bold">12개</span></div>
+                </div>
+            </div>
+            
+            <div id="tab-taste" class="tab-content hidden">
+                <p class="text-xs text-muted-foreground mb-3">김핫플님이 선호하는 키워드입니다.</p>
+                <div class="flex flex-wrap gap-2 mb-5" id="taste-keyword-container"></div>
+                <div class="bg-muted/30 p-4 rounded-xl border border-border"><p class="text-sm font-bold mb-1">🎯 추천 카테고리</p><p class="text-xs text-muted-foreground">스터디하기 좋은 조용한 카페, 혼술하기 좋은 이자카야</p></div>
+            </div>
+
+            <div id="tab-stamps" class="tab-content hidden">
+                <div class="flex justify-between items-center mb-4"><h4 class="font-bold text-primary">☕ 홍대 카페 투어</h4><span class="text-xs font-bold text-status-red bg-status-red/10 px-2 py-1 rounded">D-5</span></div>
+                <div class="grid grid-cols-5 gap-3 mb-4">
+                    <div class="aspect-square rounded-full bg-status-orange/20 border-2 border-status-orange flex items-center justify-center text-status-orange font-bold shadow-sm"><i class="fa-solid fa-check"></i></div>
+                    <div class="aspect-square rounded-full bg-status-orange/20 border-2 border-status-orange flex items-center justify-center text-status-orange font-bold shadow-sm"><i class="fa-solid fa-check"></i></div>
+                    <div class="aspect-square rounded-full bg-status-orange/20 border-2 border-status-orange flex items-center justify-center text-status-orange font-bold shadow-sm"><i class="fa-solid fa-check"></i></div>
+                    <div class="aspect-square rounded-full bg-muted border border-border flex items-center justify-center text-muted-foreground font-bold text-xs">4</div>
+                    <div class="aspect-square rounded-full bg-muted border border-border flex items-center justify-center text-muted-foreground font-bold text-xs">5</div>
+                </div>
+                <p class="text-xs text-center text-muted-foreground">2개 더 모으면 아메리카노 무료!</p>
+            </div>
+
+            <div id="tab-events" class="tab-content hidden">
+                <div class="flex flex-col gap-3">
+                    <div class="bg-card border border-border p-4 rounded-xl shadow-sm hover:shadow-md transition-shadow cursor-pointer">
+                        <div class="font-bold text-sm mb-1 text-primary">📢 오픈 기념 리뷰 이벤트</div>
+                        <div class="text-xs text-status-blue mb-2 font-medium">2023.10.01 ~ 10.31</div>
+                        <p class="text-xs text-muted-foreground">리뷰 작성 시 포인트 2배 적립!</p>
+                    </div>
+                    <div class="bg-card border border-border p-4 rounded-xl shadow-sm hover:shadow-md transition-shadow cursor-pointer">
+                        <div class="font-bold text-sm mb-1 text-primary">☕ 제휴 카페 10% 할인</div>
+                        <div class="text-xs text-status-green mb-2 font-medium">상시 진행</div>
+                        <p class="text-xs text-muted-foreground">학생증 인증 시 모든 음료 할인</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="fixed top-[100px] left-1/2 -translate-x-1/2 bg-foreground/90 text-background px-4 py-2 rounded-full text-xs font-medium z-[100] opacity-0 transition-opacity pointer-events-none shadow-lg md:left-[calc(400px+50%)]"></div>
+
+    <script>
+        // --- [수정] 데이터: 18시 기준 모든 상태(파랑/초록/주황/빨강)가 나오도록 조정 ---
+        const placesData = [
+            { 
+                name: "카페 오브제", category: "카페", lat: 37.5575, lng: 126.9245, 
+                tags: ["#감성", "#포토존", "cafe", "mood"], 
+                img: "https://images.unsplash.com/photo-1509042239860-f550ce710b93?q=80&w=400&h=400&auto=format&fit=crop", 
+                address: "와우산로 21길 10", time: "12:00 - 22:00", desc: "앤티크한 감성 카페", 
+                menu: { "아인슈페너": "6,500원", "크로플": "9,000원" }, 
+                statusMap: { 12: {text:"여유", color:"blue"}, 18: {text:"여유", color:"blue"}, 22: {text:"영업종료", color:"gray"} } 
+            },
+            { 
+                name: "레벨업 PC카페", category: "PC방", lat: 37.5568, lng: 126.9238, 
+                tags: ["#RTX4090", "#고사양", "group"], 
+                img: "https://images.unsplash.com/photo-1542751371-adc38448a05e?q=80&w=400&h=400&auto=format&fit=crop", 
+                address: "홍익로 6길 10", time: "24시간", desc: "프리미엄 사양 PC방", 
+                menu: { "치킨마요": "6,500원", "아메리카노": "3,000원" }, 
+                statusMap: { 12: {text:"여유", color:"blue"}, 18: {text:"보통", color:"green"}, 22: {text:"포화", color:"red"} } 
+            },
+            { 
+                name: "심야식당 몽환", category: "이자카야", lat: 37.5582, lng: 126.9255, 
+                tags: ["#조용한", "#혼술", "pub", "mood"], 
+                img: "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?q=80&w=400&h=400&auto=format&fit=crop", 
+                address: "와우산로 29길 12", time: "18:00 - 03:00", desc: "혼술하기 좋은 몽환적인 분위기", 
+                menu: { "모듬 꼬치": "15,000원", "명란 구이": "12,000원" }, 
+                statusMap: { 12: {text:"영업전", color:"gray"}, 18: {text:"혼잡", color:"orange"}, 20: {text:"혼잡", color:"orange"}, 22: {text:"혼잡", color:"orange"} } 
+            },
+            { 
+                name: "홍대 라멘트럭", category: "라멘", lat: 37.5570, lng: 126.9260, 
+                tags: ["#맛집", "#웨이팅", "pub"], 
+                img: "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?q=80&w=400&h=400&auto=format&fit=crop", 
+                address: "독막로 15길 3", time: "11:00 - 21:00", desc: "차슈가 일품인 라멘집", 
+                menu: { "라멘": "10,000원", "차슈추가": "2,000원" }, 
+                statusMap: { 12: {text:"포화", color:"red"}, 18: {text:"포화", color:"red"}, 22: {text:"영업종료", color:"gray"} } 
+            }
+        ];
+
+        var map = null;
+        var markers = [];
+        var routePolylines = [];
+        var selectedHour = 18;
+        var selectedDate = "11.26(수)";
+        var currentFilter = 'all';
+
+        let myKeywords = ["#조용한", "#감성카페", "#가성비", "#웨이팅싫어", "#디저트맛집", "#혼밥가능"];
+        const allKeywordDatabase = [
+            "#조용한", "#감성카페", "#가성비", "#웨이팅싫어", "#디저트맛집", "#혼밥가능",
+            "#분위기좋은", "#데이트코스", "#야경맛집", "#루프탑", "#반려동물동반", 
+            "#노트북하기좋은", "#카공", "#넓은매장", "#주차가능", "#친절한", 
+            "#포토존", "#힙한", "#레트로", "#모던한", "#테라스", "#브런치"
+        ];
+
+        const COLOR_MAP = { 
+            blue: "#3b82f6", 
+            green: "#22c55e", 
+            orange: "#f97316", 
+            red: "#ef4444", 
+            gray: "#9ca3af" 
+        };
+
+        // [수정] 혼잡도별 애니메이션 크기 (Scale) 정의
+        const PULSE_SCALES = {
+            blue: 1.3,   // 작게
+            green: 1.7,  // 중간
+            orange: 2.1, // 크게
+            red: 2.6     // 매우 크게
+        };
+
+        function initMap() {
+            map = new naver.maps.Map('map', { center: new naver.maps.LatLng(37.557527, 126.9244669), zoom: 16, scaleControl: false, logoControl: false, mapDataControl: false, zoomControl: false });
+            initCalendar();
+            initTimeWheel();
+            renderUI();
+            renderTasteKeywords();
+        }
+
+        function renderTasteKeywords() {
+            const container = document.getElementById('taste-keyword-container');
+            let html = '';
+            myKeywords.forEach(k => {
+                const isHighlight = ["#조용한", "#감성카페", "#웨이팅싫어"].includes(k);
+                const cls = isHighlight ? "bg-status-green/10 text-status-green border-status-green/20 font-bold" : "bg-muted text-muted-foreground border-border";
+                html += `<span class="px-3 py-1.5 border rounded-full text-xs ${cls}">${k}</span>`;
+            });
+            html += `<button onclick="openKeywordSearch()" class="px-3 py-1.5 bg-primary text-primary-foreground border border-transparent rounded-full text-xs font-bold shadow-sm hover:bg-primary/90 transition-colors flex items-center gap-1"><i class="fa-solid fa-plus"></i> 키워드 추가</button>`;
+            container.innerHTML = html;
+        }
+
+        function openKeywordSearch() {
+            openModal('keyword');
+            document.getElementById('keyword-input').value = '';
+            document.getElementById('keyword-input').focus();
+            onKeywordInput('');
+        }
+
+        function onKeywordInput(val) {
+            const container = document.getElementById('keyword-suggestions');
+            let suggestions = [];
+            if (!val) suggestions = allKeywordDatabase.filter(k => !myKeywords.includes(k)).slice(0, 5);
+            else suggestions = allKeywordDatabase.filter(k => k.includes(val) && !myKeywords.includes(k));
+
+            if (suggestions.length === 0) {
+                container.innerHTML = `<div class="text-xs text-muted-foreground py-2 text-center">추천 키워드가 없습니다.</div>`;
+                return;
+            }
+            container.innerHTML = suggestions.map(k => `<div class="px-3 py-2 rounded-lg hover:bg-muted cursor-pointer text-sm text-foreground transition-colors flex justify-between items-center" onclick="addKeyword('${k}')"><span>${k}</span><i class="fa-solid fa-plus text-xs text-muted-foreground"></i></div>`).join('');
+        }
+
+        function addKeyword(keyword) {
+            myKeywords.push(keyword);
+            renderTasteKeywords();
+            closeModal();
+            showToast(`${keyword} 키워드가 추가되었습니다.`);
+        }
+
+        function initCalendar() {
+            const grid = document.getElementById('calendar-grid');
+            const days = ['일','월','화','수','목','금','토'];
+            let html = days.map(d => `<div class="text-muted-foreground">${d}</div>`).join('');
+            for(let i=24; i<=30; i++) {
+                let isToday = (i === 26);
+                let cls = isToday ? "bg-primary text-primary-foreground rounded-full w-8 h-8 flex items-center justify-center font-bold mx-auto cursor-pointer" : "w-8 h-8 flex items-center justify-center mx-auto cursor-pointer hover:bg-muted rounded-full transition-colors";
+                html += `<div class="${cls}" onclick="selectDate(this, ${i})">${i}</div>`;
+            }
+            grid.innerHTML = html;
+        }
+
+        function selectDate(el, day) {
+            document.querySelectorAll('#calendar-grid div').forEach(d => { if(d.classList.contains('bg-primary')) d.className = "w-8 h-8 flex items-center justify-center mx-auto cursor-pointer hover:bg-muted rounded-full transition-colors"; });
+            el.className = "bg-primary text-primary-foreground rounded-full w-8 h-8 flex items-center justify-center font-bold mx-auto cursor-pointer";
+            selectedDate = `11.${day}(수)`;
+        }
+
+        function initTimeWheel() {
+            const hourCol = document.getElementById('wheel-hour');
+            let hHtml = '';
+            for(let i=1; i<=12; i++) { let cls = (i === 6) ? 'selected' : ''; hHtml += `<div class="wheel-item ${cls}" data-val="${i}">${i}</div>`; }
+            hourCol.innerHTML = hHtml;
+            document.querySelectorAll('.wheel-col').forEach(col => {
+                col.addEventListener('click', (e) => {
+                    if(e.target.classList.contains('wheel-item')) {
+                        Array.from(col.children).forEach(c => c.classList.remove('selected', 'text-primary', 'font-bold', 'text-lg'));
+                        e.target.classList.add('selected');
+                        col.scrollTo({ top: e.target.offsetTop - 64, behavior: 'smooth' });
+                    }
+                });
+            });
+        }
+
+        function confirmDateTime() {
+            const ampm = document.querySelector('#wheel-ampm .wheel-item.selected').dataset.val;
+            let hour = parseInt(document.querySelector('#wheel-hour .wheel-item.selected').dataset.val);
+            const min = document.querySelector('#wheel-minute .wheel-item.selected').dataset.val;
+            const ampmText = ampm === 'AM' ? '오전' : '오후';
+            document.getElementById('datetime-text').innerText = `${selectedDate} ${ampmText} ${hour}:${min}`;
+            if (ampm === 'PM' && hour < 12) hour += 12;
+            if (ampm === 'AM' && hour === 12) hour = 0;
+            selectedHour = hour;
+            closeModal();
+            renderUI();
+            showToast(`${selectedDate} ${ampmText} ${hour > 12 ? hour-12 : hour}:${min} 기준 정보를 표시합니다.`);
+        }
+
+        function filterPlaces(category) {
+            currentFilter = category;
+            document.querySelectorAll('#filter-container button').forEach(btn => {
+                const isActive = btn.getAttribute('onclick').includes(`'${category}'`);
+                btn.className = isActive ? 'chip active px-3 py-1.5 bg-primary text-primary-foreground text-xs rounded-full border border-transparent shadow-sm whitespace-nowrap transition-all' : 'chip px-3 py-1.5 bg-background border border-border text-muted-foreground text-xs rounded-full shadow-sm whitespace-nowrap hover:bg-muted transition-all';
+            });
+            renderUI();
+        }
+
+        function getStatus(place) { return (place.statusMap && place.statusMap[selectedHour]) || {text:"보통", color:"green"}; }
+
+        function renderUI() {
+            markers.forEach(m => m.setMap(null));
+            markers = [];
+            const listContainer = document.getElementById('place-list');
+            listContainer.innerHTML = '';
+            const filteredData = placesData.filter(place => currentFilter === 'all' || place.tags.includes(currentFilter));
+            
+            filteredData.forEach((place, index) => {
+                const statusInfo = getStatus(place);
+                const hexColor = COLOR_MAP[statusInfo.color] || "#000";
+                
+                // [수정] 모든 마커에 펄스 적용 & 색상별 크기(Scale) 지정
+                const scale = PULSE_SCALES[statusInfo.color] || 1.5; // 기본값 1.5
+                
+                // style="--pulse-scale: ${scale}" 를 주입하여 CSS 애니메이션 크기 조절
+                const pulseHtml = `<div class="absolute w-full h-full rounded-full opacity-40 hot-pulse origin-center" style="background-color: ${hexColor}; --pulse-scale: ${scale};"></div>`;
+
+                var markerContent = `
+                    <div class="marker-content flex flex-col items-center cursor-pointer group" onclick="openDetail(${index})">
+                        <div class="marker-bubble bg-white px-3 py-1.5 rounded-full shadow-lg text-xs font-bold text-slate-800 whitespace-nowrap mb-2 relative z-20 transition-transform group-hover:-translate-y-1 border border-gray-100">
+                            ${place.name}
+                            <div class="absolute left-1/2 bottom-[-6px] -translate-x-1/2 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[6px] border-t-white"></div>
+                        </div>
+                        <div class="relative flex items-center justify-center w-10 h-10">
+                            ${pulseHtml}
+                            <div class="w-8 h-8 rounded-full shadow-md flex items-center justify-center border-2 border-white z-10" style="background-color: ${hexColor}">
+                                <i class="fa-solid fa-location-dot text-white text-sm"></i>
+                            </div>
+                        </div>
+                    </div>`;
+                
+                var marker = new naver.maps.Marker({ position: new naver.maps.LatLng(place.lat, place.lng), map: map, icon: { content: markerContent, size: new naver.maps.Size(100, 60), anchor: new naver.maps.Point(50, 60) }, zIndex: 100 });
+                markers.push(marker);
+                
+                listContainer.innerHTML += `
+                    <div class="place-card flex gap-4 p-5 border-b border-border cursor-pointer transition-colors hover:bg-muted/30 border-l-4" style="border-left-color: ${hexColor}" onclick="openDetail(${index})">
+                        <img src="${place.img}" class="w-20 h-20 rounded-lg object-cover bg-muted border border-border shrink-0">
+                        <div class="flex-1 flex flex-col justify-center min-w-0">
+                            <div class="font-bold text-base text-foreground mb-1 truncate">${place.name} <span class="text-xs text-muted-foreground font-normal ml-1">${place.category}</span></div>
+                            <div class="flex gap-1 flex-wrap mb-2">${place.tags.filter(t=>t.startsWith('#')).map(t => `<span class="px-1.5 py-0.5 bg-muted rounded text-[10px] text-muted-foreground">${t}</span>`).join('')}</div>
+                            <div class="text-xs font-bold flex items-center gap-1.5" style="color: ${hexColor}"><i class="fa-solid fa-rss"></i> ${statusInfo.text}</div>
+                        </div>
+                    </div>`;
+            });
+        }
+
+        function openDetail(index) {
+            const place = placesData[index];
+            const statusInfo = getStatus(place);
+            const hexColor = COLOR_MAP[statusInfo.color];
+            if(map) map.panTo(new naver.maps.LatLng(place.lat, place.lng));
+            const modal = document.getElementById('detail-modal');
+            const overlay = document.getElementById('modal-overlay');
+            let menuHtml = place.menu ? Object.entries(place.menu).map(([m, p]) => `<div class="flex justify-between"><span class="font-medium">${m}</span><span class="text-muted-foreground">${p}</span></div>`).join('') : '';
+            let recoHtml = placesData.filter(p => p.name !== place.name).map(p => `<div class="min-w-[120px] border border-border rounded-lg overflow-hidden cursor-pointer hover:shadow-md transition-shadow" onclick="showToast('추천 장소로 이동합니다')"><img src="${p.img}" class="w-full h-20 object-cover bg-muted"><div class="p-2"><div class="font-bold text-xs text-foreground truncate mb-0.5">${p.name}</div><div class="text-[10px] text-muted-foreground">${p.category}</div></div></div>`).join('');
+            modal.innerHTML = `<div class="relative h-44 shrink-0"><img src="${place.img}" class="w-full h-full object-cover"><div class="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div><button class="absolute top-4 right-4 bg-black/30 text-white w-8 h-8 rounded-full flex items-center justify-center hover:bg-black/50 transition-colors backdrop-blur-sm" onclick="closeModal()"><i class="fa-solid fa-xmark"></i></button><div class="absolute bottom-4 left-5 text-white"><h2 class="text-xl font-bold flex items-center gap-2">${place.name}<span class="text-xs px-2 py-0.5 rounded-full bg-white/20 backdrop-blur-md border border-white/30">${place.category}</span></h2></div></div><div class="p-5 overflow-y-auto"><div class="flex items-center justify-between mb-4"><span class="text-sm font-bold px-2.5 py-1 rounded bg-opacity-10" style="background-color: ${hexColor}20; color: ${hexColor}"><i class="fa-solid fa-rss mr-1"></i> 현재 ${statusInfo.text}</span><span class="text-xs text-muted-foreground">★ 4.8 (120)</span></div><div class="space-y-2 text-sm text-muted-foreground mb-5"><div class="flex items-start gap-2"><i class="fa-solid fa-location-dot w-4 mt-0.5 text-center"></i> ${place.address}</div><div class="flex items-start gap-2"><i class="fa-regular fa-clock w-4 mt-0.5 text-center"></i> ${place.time}</div><div class="flex items-start gap-2"><i class="fa-solid fa-circle-info w-4 mt-0.5 text-center"></i> ${place.desc}</div><div class="flex items-start gap-2 text-foreground font-semibold mt-1"><i class="fa-solid fa-check-circle w-4 mt-0.5 text-center text-status-green"></i> 포스기 연동: 실시간 영업 상태 확인됨</div></div><div class="bg-muted/30 p-4 rounded-xl border border-border mb-5"><div class="font-bold text-sm mb-2 text-foreground">대표 메뉴</div><div class="space-y-1 text-xs text-foreground">${menuHtml}</div></div><div class="flex gap-3 mb-6"><button class="flex-1 py-3 border border-border rounded-lg font-bold text-sm text-foreground hover:bg-muted transition-colors" onclick="startNavigation(${place.lat}, ${place.lng})"><i class="fa-solid fa-location-arrow mr-1"></i> 길찾기</button><button class="flex-1 py-3 bg-primary text-primary-foreground rounded-lg font-bold text-sm hover:bg-primary/90 transition-colors shadow-sm" onclick="openReservation()"><i class="fa-regular fa-calendar-check mr-1"></i> 예약하기</button></div><div class="pt-5 border-t border-border"><div class="font-bold text-sm mb-3 text-foreground">이런 곳은 어때요?</div><div class="flex gap-3 overflow-x-auto scrollbar-hide pb-2">${recoHtml}</div></div></div>`;
+            overlay.classList.remove('hidden');
+            requestAnimationFrame(() => { overlay.classList.remove('opacity-0'); modal.classList.remove('hidden'); requestAnimationFrame(() => { modal.classList.remove('opacity-0', 'translate-y-[-40%]', 'scale-95'); }); });
+        }
+
+        function startNavigation(destLat, destLng) {
+            closeModal();
+            const myLat = 37.5575, myLng = 126.9225;
+
+            // 화면 전환
+            document.getElementById('list-view').classList.add('hidden');
+            document.getElementById('route-view').classList.remove('hidden');
+            document.getElementById('route-view').classList.add('flex');
+
+            // 기존 경로 삭제
+            routePolylines.forEach(p => p.setMap(null));
+            routePolylines = [];
+
+            // 경로 설정
+            const path1 = [new naver.maps.LatLng(myLat, myLng), new naver.maps.LatLng((myLat+destLat)/2, (myLng+destLng)/2), new naver.maps.LatLng(destLat, destLng)];
+            const path2 = [new naver.maps.LatLng(myLat, myLng), new naver.maps.LatLng(myLat+0.002, myLng-0.001), new naver.maps.LatLng(destLat+0.001, destLng-0.001), new naver.maps.LatLng(destLat, destLng)];
+            const path3 = [new naver.maps.LatLng(myLat, myLng), new naver.maps.LatLng(myLat-0.001, myLng+0.002), new naver.maps.LatLng(destLat-0.002, destLng+0.001), new naver.maps.LatLng(destLat, destLng)];
+
+            // 경로 그리기
+            drawRoute(path1, '#4facfe', 0); // Blue
+            drawRoute(path2, '#00c73c', 1); // Green
+            drawRoute(path3, '#ff4d4d', 2); // Red
+
+            highlightRoute(0);
+
+            const bounds = new naver.maps.LatLngBounds();
+            [...path1, ...path2, ...path3].forEach(p => bounds.extend(p));
+            map.fitBounds(bounds, {top: 100, bottom: 300, left: 50, right: 50});
+
+            showToast('3가지 경로가 검색되었습니다.');
+        }
+
+        function drawRoute(path, color, index) {
+            const polyline = new naver.maps.Polyline({
+                map: map, path: path, strokeColor: color, strokeWeight: 6, strokeOpacity: 0.5, strokeLineCap: 'round', strokeLineJoin: 'round', zIndex: 10
+            });
+            polyline.set('routeIndex', index);
+            routePolylines.push(polyline);
+        }
+
+        function highlightRoute(index) {
+            routePolylines.forEach((poly, i) => {
+                if(i === index) {
+                    poly.setOptions({strokeOpacity: 1, zIndex: 20, strokeWeight: 8});
+                } else {
+                    poly.setOptions({strokeOpacity: 0.3, zIndex: 10, strokeWeight: 6});
+                }
+            });
+            document.querySelectorAll('.route-card').forEach((card, i) => {
+                if(i === index) {
+                    card.classList.add('bg-muted/30', 'ring-2', 'ring-offset-1', 'ring-primary/20');
+                } else {
+                    card.classList.remove('bg-muted/30', 'ring-2', 'ring-offset-1', 'ring-primary/20');
+                }
+            });
+        }
+
+        function stopNavigation() {
+            routePolylines.forEach(p => p.setMap(null));
+            routePolylines = [];
+            document.getElementById('route-view').classList.add('hidden');
+            document.getElementById('route-view').classList.remove('flex');
+            document.getElementById('list-view').classList.remove('hidden');
+            showToast('길찾기가 종료되었습니다.');
+        }
+
+        function openReservation() {
+            closeModal();
+            setTimeout(() => { openModal('reservation'); document.getElementById('res-date').valueAsDate = new Date(); }, 300);
+        }
+        function submitReservation() { closeModal(); showToast('예약이 성공적으로 접수되었습니다! (알림톡 발송)'); }
+        function switchTab(tabName, element) {
+            const tabs = document.querySelectorAll('.tab-item');
+            tabs.forEach(item => { item.classList.remove('active', 'text-primary', 'border-primary'); item.classList.add('text-muted-foreground', 'border-transparent'); });
+            element.classList.add('active', 'text-primary', 'border-primary'); element.classList.remove('text-muted-foreground', 'border-transparent');
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.add('hidden'));
+            document.getElementById('tab-' + tabName).classList.remove('hidden');
+        }
+        function openModal(modalId) {
+            const modal = document.getElementById(modalId + '-modal'); const overlay = document.getElementById('modal-overlay');
+            if(modal) { overlay.classList.remove('hidden'); requestAnimationFrame(() => { overlay.classList.remove('opacity-0'); modal.classList.remove('hidden'); requestAnimationFrame(() => { modal.classList.remove('opacity-0', 'translate-y-[-40%]', 'scale-95'); }); }); }
+        }
+        function closeModal() {
+            const modals = document.querySelectorAll('.modal-window'); const overlay = document.getElementById('modal-overlay');
+            modals.forEach(m => { if (!m.classList.contains('hidden')) { m.classList.add('opacity-0', 'translate-y-[-40%]', 'scale-95'); setTimeout(() => { m.classList.add('hidden'); }, 300); } });
+            overlay.classList.add('opacity-0'); setTimeout(() => { overlay.classList.add('hidden'); }, 300);
+        }
+        function showToast(msg) {
+            const toast = document.getElementById('toast'); toast.innerHTML = `<i class="fa-solid fa-circle-info mr-2"></i> ${msg}`;
+            toast.classList.remove('opacity-0', 'translate-y-4'); setTimeout(() => { toast.classList.add('opacity-0', 'translate-y-4'); }, 2000);
+        }
+    </script>
+</body>
+</html>
